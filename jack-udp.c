@@ -242,7 +242,7 @@ int jackudp_send(jack_nframes_t n, void *PTR ) {
 }
 
 
-//Basicamente un printf con la interfaz.
+//Basicamente un printf con la interfaz del menu.
 void jackudp_usage (void)
 {
   eprintf("Usage: jack-udp [ options ] mode\n");
