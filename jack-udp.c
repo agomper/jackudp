@@ -247,43 +247,45 @@ void jackudp_usage (void)
 {
   eprintf("Usage: jack-udp [ options ] mode\n");
   eprintf("   -b  Set the ring buffer size in frames (default=4096).\n");
-  eprintf("   -c  Set the client name (default=\"jack-udp-PID\").\n");
+  eprintf("   -n  Set the client name (default=\"jack-udp-PID\").\n");
   eprintf("   -p  Set the port number (default=57160).\n");
-  eprintf("   -n  Set the number of channels (default=2).\n");
-  eprintf("   -r  Set the remote addrress to send to (default=\"127.0.0.1\").\n");
+  eprintf("   -h  Set the number of channels (default=2).\n");
+  eprintf("   -s  Set the remote addrress to send to (default=\"127.0.0.1\").\n");
+  eprintf("   -r  Set receiver mode.\n");
   FAILURE;
 }
 
 
 
-int main (int argc, char **argv)
-{
+int main (int argc, char **argv) {
   jackudp_t d;
   int c;
   int port_n = 57160;
   char *hostname =  NULL;
   jackudp_init(&d);
+  int recv_mode;
 
   //Establece las opciones posibles del programa antes de empezar
-  while((c = getopt(argc, argv, "b:hn:p:r:c:")) != -1) { 
+  while((c = getopt(argc, argv, "b:n:p:h:s:r")) != -1) {
     switch(c) {
     case 'b': //-b  Set the ring buffer size in frames (default=4096).\n");
       d.buffer_size = atoi(optarg);
       break;
-    case 'c': //-c  Set the client name (default=\"jack-udp-PID\").\n");
+    case 'n': //-n  Set the client name (default=\"jack-udp-PID\").\n");
       d.name = optarg;
-      break;
-    case 'h': //Nada
-      jackudp_usage ();
-      break;
-    case 'n': //-n  Set the number of channels (default=2).\n");
-      d.channels = atoi (optarg);
       break;
     case 'p': //-p  Set the port number (default=57160).\n");
       port_n = atoi (optarg);
       break;
-    case 'r': //-r  Set the remote addrress to send to (default=\"127.0.0.1\").\n");
+    case 'h': //-h  Set the number of channels (default=2).\n");
+      d.channels = atoi (optarg);
+      break;
+    case 's': //-s  Set the remote addrress to send to (default=\"127.0.0.1\").\n");
       hostname = optarg;
+      recv_mode=0;
+      break;
+    case 'r': //-r  Set receiver mode.\n");
+      recv_mode=1;
       break;
     default:
       eprintf ("jack-udp: Illegal option %c.\n", c);
@@ -291,24 +293,23 @@ int main (int argc, char **argv)
       break;
     }
   }
-  //Muestras las opciones posibles
-  if (optind != argc - 1) {
-    jackudp_usage ();
-  }
+
   //Error por demasiados canales
   if(d.channels < 1 || d.channels > MAX_CHANNELS) {
     eprintf("jack-udp: illegal number of channels: %d\n", d.channels);
     FAILURE;
   }
 
-  int recv_mode = (strcmp(argv[optind], "recv") == 0); //Receiver selected
+  //int recv_mode = (strcmp(argv[optind], "recv") == 0); //Receiver selected
   d.fd = socket_udp(0);
 
 
   if(recv_mode) { //Receiver
+    eprintf("Receiver mode selected. \n");
     bind_inet(d.fd, NULL, port_n);
   } 
   else { //Sender
+    eprintf("Sender mode selected. \n");
     init_sockaddr_in(&(d.address),
 		     hostname ? hostname : "127.0.0.1",
 		     port_n);
