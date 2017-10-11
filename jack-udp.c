@@ -23,24 +23,22 @@
 
 
 //jackudp_t = Package from jack ports to ringbuffer
-typedef struct
-{
-  int buffer_size;
-  f32 *j_buffer;                    //Jack buffer
-  int fd;                           //File descriptor?
+typedef struct {
+  int buffer_size;                  //Internal buffer size in frames.
+  f32 *j_buffer;                    //Internal buffer of 32 bit floats.
+  int fd;                           //Socket File descriptor
   struct sockaddr_in address;       //IP address
   int channels;                     //Num channels
   jack_port_t *j_port[MAX_CHANNELS];//Jack ports = Channels
-  jack_ringbuffer_t *rb;            //Ring buffer
-  pthread_t c_thread;
-  int pipe[2];                      //Comunication pipe
-  char *name;                       //Name of what?
+  jack_ringbuffer_t *rb;            //Pointer to a jack ring buffer
+  pthread_t c_thread;               //Hilo
+  int pipe[2];                      //Interprocess communication pipe. Thread related.
+  char *name;                       //Client name. Default is PID.
 } jackudp_t;
 
 
-//El objeto d con el tamaño del buffer de ??? y el número de canales
-static void jackudp_init(jackudp_t *d)
-{
+//El objeto d con el tamaño del buffer y el número de canales.
+static void jackudp_init(jackudp_t *d) {
   d->buffer_size = 4096;
   d->channels = 2;
   d->name = NULL;
@@ -48,8 +46,7 @@ static void jackudp_init(jackudp_t *d)
 
 
 //packet_t = Package from ring buffer to UDP port
-typedef struct
-{
+typedef struct {
   u32 index;                //Identificador?
   u16 channels;             //Num channels
   u16 frames;               //Num frames?
@@ -57,7 +54,7 @@ typedef struct
 } packet_t;
 
 
-//Network byte order?
+//Network byte order
 void packet_ntoh(packet_t *p)
 {
   p->index = ntoh_i32(p->index);
@@ -88,125 +85,38 @@ void packet_hton(packet_t *p)
 
 
 //Metodos de enviar y recibir paquetes UDP
-void packet_sendto(int fd, packet_t *p, struct sockaddr_in address)
-{
-  packet_hton(p);
+void packet_sendto(int fd, packet_t *p, struct sockaddr_in address) {
+  packet_hton(p); //Network byte order
   sendto_exactly(fd, (unsigned char *)p, sizeof(packet_t), address); //Network
 }
 
-void packet_recv(int fd, packet_t *p, int flags)
-{
+void packet_recv(int fd, packet_t *p, int flags) {
   recv_exactly(fd, (char *)p, sizeof(packet_t), flags); //Network
-  packet_ntoh(p);
+  packet_ntoh(p); //Network byte order
 }
 
 
-/* Read data from UDP port and write to ring buffer. */
-//Teoricamente no hace falta tocar de momento.
-void *jackudp_recv_thread(void *PTR)
+//Basicamente un printf con la interfaz del menu.
+void jackudp_usage (void)
 {
-  jackudp_t *d = (jackudp_t *) PTR; //Paquete D = Interno
-  packet_t p;                       //Paquete P = Network
-  int next_packet = -1;
+  eprintf("Usage: jack-udp [ options ] mode\n");
+  eprintf("   -b  Set the ring buffer size in frames (default=4096).\n");
+  eprintf("   -n  Set the client name (default=\"jack-udp-PID\").\n");
+  eprintf("   -p  Set the port number (default=57160).\n");
+  eprintf("   -h  Set the number of channels (default=2).\n");
+  eprintf("   -s  Set the remote addrress to send to (default=\"127.0.0.1\").\n");
+  eprintf("   -r  Set receiver mode.\n");
 
-  while(1) {
-    packet_recv(d->fd, &p, 0);
-    //Comprobaciones del indice y numero de canales
-    if(p.index != next_packet && next_packet != -1) {
-      eprintf("jack-udp recv: out of order packet arrival (%d, %d)\n",
-	      next_packet, (int)p.index);
-      //FAILURE;
-    }
-    if(p.channels != d->channels) {
-      eprintf("jack-udp recv: channel mismatch packet arrival (%d != %d)\n",
-	      p.channels, d->channels);
-      //FAILURE;
-    }
-
-    int bytes_available = (int) jack_ringbuffer_write_space(d->rb);
-    if(PAYLOAD_BYTES > bytes_available) {
-      eprintf("jack-udp recv: buffer overflow (%d > %d)\n",
-	      (int) PAYLOAD_BYTES, bytes_available);
-    } else {
-      jack_ringbuffer_write_exactly(d->rb,
-				    (char *) p.data,
-				    (size_t) PAYLOAD_BYTES);
-    }
-    next_packet = p.index + 1;
-    next_packet %= INT32_MAX;
-  }
-  return NULL;
+  eprintf("FAILURE.\n");
+  FAILURE;
 }
 
 
-/* Write data from ring buffer to JACK output ports. */
-//Este se cambia del ring buffer a archivo
-int jackudp_recv (jack_nframes_t nframes, void *PTR)
-{
-  jackudp_t *d = (jackudp_t *) PTR; //Paquete D
-  if(nframes >= d->buffer_size) {
-    eprintf("jack-udp recv: JACK buffer size exceeds limit\n");
-    return -1;
-  }
 
-  //Conversion del RingBuffer a Jack Ports
-  //Le dice los punteros outq que apunten al mismo sitio que los Jack ports.
-  int i, j;
-  float *out[MAX_CHANNELS];
-  for(i = 0; i < d->channels; i++) {
-    out[i] = (float *) jack_port_get_buffer(d->j_port[i], nframes);
-  }
+//*************************** JACK CLIENTS (LOCAL) ***************************/
 
-  //Comprueba si tiene informacion para el Jack
-  int nsamples = nframes * d->channels;
-  int nbytes = nsamples * sizeof(f32);
-  int bytes_available = (int) jack_ringbuffer_read_space(d->rb);
-  //Si no tiene suficiente informacion, reseta los punteros out.
-  if(nbytes > bytes_available) {
-    eprintf("jack-udp recv: buffer underflow (%d > %d)\n",
-	    nbytes, bytes_available);
-    for(i = 0; i < nframes; i++) {
-      for(j = 0; j < d->channels; j++) {
-	out[j][i] = (float) 0.0;
-      }
-    }
-
-  }
-  //Pero si tiene suficiente informacion se la da a Jack ports, mediante
-  //los punteros out.
-  else {
-    jack_ringbuffer_read_exactly(d->rb, (char *)d->j_buffer, nbytes);
-    for(i = 0; i < nframes; i++) {
-      for(j = 0; j < d->channels; j++) {
-            out[j][i] = (float) d->j_buffer[(i * d->channels) + j];
-      }
-    }
-  }
-  return 0;
-}
-
-
-/* Read data from ring buffer and write to udp port. Packets are
-   always sent with a full payload. */
-void *jackudp_send_thread(void *PTR) {
-  jackudp_t *d = (jackudp_t *) PTR;
-  packet_t p;
-  p.index = 0;
-  while(1) {
-    jack_ringbuffer_wait_for_read(d->rb, PAYLOAD_BYTES, d->pipe[0]);
-    p.index += 1;
-    p.index %= INT32_MAX;
-    p.channels = d->channels;
-    p.frames = PAYLOAD_SAMPLES / d->channels;
-    jack_ringbuffer_read_exactly(d->rb, (char *)&(p.data), PAYLOAD_BYTES);
-    packet_sendto(d->fd,  &p, d->address);
-  }
-  return NULL;
-}
-
-
-/* Write data from the JACK input ports to the ring buffer. */
-//Aqui se cambia de jack input a lectura de archivo
+// JACK CLIENT SEND
+// Write data from the JACK input ports to the ring buffer.
 int jackudp_send(jack_nframes_t n, void *PTR ) {
   jackudp_t *d = (jackudp_t *) PTR; //Paquete D
   float *in[MAX_CHANNELS];
@@ -230,7 +140,7 @@ int jackudp_send(jack_nframes_t n, void *PTR ) {
     eprintf ("jack-udp send: buffer overflow error (UDP thread late)\n");
   } else {
     jack_ringbuffer_write_exactly(d->rb,
-				    (char *) d->j_buffer, bytes_to_write );
+                    (char *) d->j_buffer, bytes_to_write );
   }
 
   char b = 1;
@@ -242,50 +152,153 @@ int jackudp_send(jack_nframes_t n, void *PTR ) {
 }
 
 
-//Basicamente un printf con la interfaz del menu.
-void jackudp_usage (void)
+// JACK CLIENT RECEIVE
+// Write data from ring buffer to JACK output ports.
+int jackudp_recv (jack_nframes_t nframes, void *PTR)
 {
-  eprintf("Usage: jack-udp [ options ] mode\n");
-  eprintf("   -b  Set the ring buffer size in frames (default=4096).\n");
-  eprintf("   -n  Set the client name (default=\"jack-udp-PID\").\n");
-  eprintf("   -p  Set the port number (default=57160).\n");
-  eprintf("   -h  Set the number of channels (default=2).\n");
-  eprintf("   -s  Set the remote addrress to send to (default=\"127.0.0.1\").\n");
-  eprintf("   -r  Set receiver mode.\n");
-  FAILURE;
+  jackudp_t *d = (jackudp_t *) PTR; //Paquete D
+  if(nframes >= d->buffer_size) {
+    eprintf("jack-udp recv: JACK buffer size exceeds limit\n");
+    return -1;
+  }
+
+  //Conversion del RingBuffer a Jack Ports
+  //Le dice los punteros outq que apunten al mismo sitio que los Jack ports.
+  int i, j;
+  float *out[MAX_CHANNELS];
+  for(i = 0; i < d->channels; i++) {
+    out[i] = (float *) jack_port_get_buffer(d->j_port[i], nframes);
+  }
+
+  //Comprueba si tiene informacion para el Jack
+  int nsamples = nframes * d->channels;
+  int nbytes = nsamples * sizeof(f32);
+  int bytes_available = (int) jack_ringbuffer_read_space(d->rb);
+  //Si no tiene suficiente informacion, reseta los punteros out.
+  if(nbytes > bytes_available) {
+    eprintf("jack-udp recv: buffer underflow (%d > %d)\n",
+        nbytes, bytes_available);
+    for(i = 0; i < nframes; i++) {
+      for(j = 0; j < d->channels; j++) {
+    out[j][i] = (float) 0.0;
+      }
+    }
+
+  }
+  //Pero si tiene suficiente informacion se la da a Jack ports, mediante
+  //los punteros out.
+  else {
+    jack_ringbuffer_read_exactly(d->rb, (char *)d->j_buffer, nbytes);
+    for(i = 0; i < nframes; i++) {
+      for(j = 0; j < d->channels; j++) {
+            out[j][i] = (float) d->j_buffer[(i * d->channels) + j];
+      }
+    }
+  }
+  return 0;
 }
 
 
 
+/************************ THREADS (NETWORK) ******************************/
+
+// Read data from ring buffer and write to udp port. Packets are
+// always sent with a full payload.
+void *jackudp_send_thread(void *PTR) {
+   jackudp_t *d = (jackudp_t *) PTR;     //Paquete interno
+   packet_t p;                           //Network package
+   p.index = 0;                          //Inicializa el indice a 0
+
+   while(1) {
+     jack_ringbuffer_wait_for_read(d->rb, PAYLOAD_BYTES, d->pipe[0]);
+
+     p.index += 1;
+     p.index %= INT32_MAX;
+     p.channels = d->channels;
+     p.frames = PAYLOAD_SAMPLES / d->channels;
+
+     jack_ringbuffer_read_exactly(d->rb, (char *)&(p.data), PAYLOAD_BYTES);
+     packet_sendto(d->fd,  &p, d->address);
+   }
+   return NULL;
+}
+
+
+// Read data from UDP port and write to ring buffer.
+void *jackudp_recv_thread(void *PTR) {
+  jackudp_t *d = (jackudp_t *) PTR; //Paquete D = Interno
+  packet_t p;                       //Paquete P = Network
+  int next_packet = -1;
+
+  while(1) {
+    //Llama al metodo para recibir 1 paquete de P.
+    packet_recv(d->fd, &p, 0);
+
+    //Comprobaciones del indice y numero de canales
+    if(p.index != next_packet || next_packet != -1) {
+      eprintf("jack-udp recv: out of order packet "
+              "arrival (Esperado, Recibido) (%d, %d)\n",
+	      next_packet, (int)p.index);
+      //FAILURE;
+    }
+    if(p.channels != d->channels) {
+      eprintf("jack-udp recv: channel mismatch packet "
+              "arrival (Esperado, Recibido) (%d != %d)\n",
+	      p.channels, d->channels);
+      FAILURE;
+    }
+
+    //Comprueba el espacio que tiene para escribir en el RingBuffer
+    int bytes_available = (int) jack_ringbuffer_write_space(d->rb);
+    //Si no hay espacio, avisa.
+    if(PAYLOAD_BYTES > bytes_available) {
+      eprintf("jack-udp recv: buffer overflow (%d > %d)\n",
+	      (int) PAYLOAD_BYTES, bytes_available);
+    } else {
+      jack_ringbuffer_write_exactly(d->rb,
+				    (char *) p.data,
+				    (size_t) PAYLOAD_BYTES);
+    }
+
+    //Actualiza el indice del paquete que debe llegar.
+    next_packet = p.index + 1;
+    next_packet %= INT32_MAX;
+  }
+  return NULL;
+}
+
+
+
+/*********************************** MAIN *************************************/
 int main (int argc, char **argv) {
   jackudp_t d;
-  int c;
-  int port_n = 57160;
+  int c;                    //Opcion del menu.
+  int port_n = 57160;       //Puerto comunicacion.
   char *hostname =  NULL;
-  jackudp_init(&d);
-  int recv_mode;
+  jackudp_init(&d);         //Inicializa el paquete interno d
+  int recv_mode;            //Bool receiver/sender mode.
 
-  //Establece las opciones posibles del programa antes de empezar
+  //Switch que elige dependiendo del parametro que le manden.
   while((c = getopt(argc, argv, "b:n:p:h:s:r")) != -1) {
     switch(c) {
-    case 'b': //-b  Set the ring buffer size in frames (default=4096).\n");
+    case 'b': //-b  Set the ring buffer size in frames (default=4096).
       d.buffer_size = atoi(optarg);
       break;
-    case 'n': //-n  Set the client name (default=\"jack-udp-PID\").\n");
+    case 'n': //-n  Set the client name (default=\"jack-udp-PID\").
       d.name = optarg;
       break;
-    case 'p': //-p  Set the port number (default=57160).\n");
+    case 'p': //-p  Set the port number (default=57160).
       port_n = atoi (optarg);
       break;
-    case 'h': //-h  Set the number of channels (default=2).\n");
+    case 'h': //-h  Set the number of channels (default=2).
       d.channels = atoi (optarg);
       break;
-    case 's': //-s  Set the remote addrress to send to (default=\"127.0.0.1\").\n");
+    case 's': //-s  Set the remote addrress to send to (default=\"127.0.0.1\").
       hostname = optarg;
-      recv_mode=0;
+      recv_mode = 0;  //Receiver mode = False.
       break;
     case 'r': //-r  Set receiver mode.\n");
-      recv_mode=1;
+      recv_mode = 1; //Receiver mode = True.
       break;
     default:
       eprintf ("jack-udp: Illegal option %c.\n", c);
@@ -300,27 +313,41 @@ int main (int argc, char **argv) {
     FAILURE;
   }
 
-  //int recv_mode = (strcmp(argv[optind], "recv") == 0); //Receiver selected
+  //Crea el socket UDP, default protocol y le devuelve el file descriptor.
   d.fd = socket_udp(0);
 
 
-  if(recv_mode) { //Receiver
+  if(recv_mode) { //Receiver mode = 1 = True
     eprintf("Receiver mode selected. \n");
+    //void bind_inet(int fd, const char *hostname, int port)
     bind_inet(d.fd, NULL, port_n);
+    eprintf("Connected on port: %d\n", port_n);
   } 
-  else { //Sender
+  else { //Sender mode
     eprintf("Sender mode selected. \n");
+    //void init_sockaddr_in(struct sockaddr_in *name,
+    //       const char *hostname,
+    //       uint16_t port)
     init_sockaddr_in(&(d.address),
-		     hostname ? hostname : "127.0.0.1",
+             hostname ? hostname : "127.0.0.1", //Si no hay, direccion por defecto.
 		     port_n);
   }
 
+  //Total = Num frames * Num channels * 32 bits
   d.buffer_size *= d.channels * sizeof(f32);
+  //xmalloc(). The motto is succeed or die. If it fails to allocate memory,
+  //it will terminate your program and print an error message
   d.j_buffer = xmalloc(d.buffer_size);
+  //Allocates a ringbuffer data structure of a specified size.
   d.rb = jack_ringbuffer_create(d.buffer_size);
+  //The pipe is then used for communication either between the parent or child
+  //processes, or between two sibling processes.
   xpipe(d.pipe);
+  //Cliente jack
   jack_client_t *client = NULL;
 
+  //Irrelevante ya que solo vamos a usar el que es por defecto.
+  //Both cases. Open an external client session with a JACK server.
   if(d.name) {
     client = jack_client_open(d.name,JackNullOption,NULL);
   } 
@@ -328,18 +355,43 @@ int main (int argc, char **argv) {
     client = jack_client_unique("jack-udp");
   }
 
+  //Sensibilidad de los mensajes de error a mostrar de Jack. Minimo.
   jack_set_error_function(jack_client_minimal_error_handler);
+  //Register a function (and argument) to be called if and when the
+  //JACK server shuts down the client thread
   jack_on_shutdown(client, jack_client_minimal_shutdown_handler, 0);
+  //Tell the Jack server to call @a process_callback whenever there is
+  //work be done, passing @a arg as the second argument.
   jack_set_process_callback(client, recv_mode ? jackudp_recv : jackudp_send, &d);
+  //Registra los puertos en Jack. Segun el número que sea (channels)
+  //y si son output or input dependiendo de sender o receiver.
   jack_port_make_standard(client, d.j_port, d.channels, recv_mode/*, false*/);
+  //Activa el cliente del servidor Jack local.
   jack_client_activate(client);
-  pthread_create(&(d.c_thread),NULL,recv_mode ? jackudp_recv_thread : jackudp_send_thread,&d);
+
+  //Una vez que ha dejado listo el cliente del servidor Jack local
+  //crea un hilo para enviar o recibir paquetes dependiendo del
+  //modo elegido al inicio. Llama al metodo que le corresponda
+  //pasando el argumento d.
+  pthread_create(&(d.c_thread),
+                 NULL,
+                 recv_mode ? jackudp_recv_thread : jackudp_send_thread,
+                 &d);
+
+  //The pthread_join() function suspends execution of
+  //the calling thread until the target thread terminates
   pthread_join(d.c_thread, NULL);
+  //Cierra el socket del tipo UDP creado.
   close(d.fd);
+  // The caller must arrange for a call to jack_ringbuffer_free()
+  //to release the memory associated with the ringbuffer.
   jack_ringbuffer_free(d.rb);
+  //Cierra el cliente jack creado.
   jack_client_close(client);
+  //Cierra las communication pipes de los procesos.
   close(d.pipe[0]);
   close(d.pipe[1]);
+  //Libera el espacio reservado para el buffer.
   free(d.j_buffer);
   return EXIT_SUCCESS;
 }

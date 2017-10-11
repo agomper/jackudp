@@ -18,6 +18,7 @@
 
 int socket_udp(int flags)
 {
+  //int socket(int domain, int type, int protocol)
   int fd = socket(AF_INET, SOCK_DGRAM, flags);
   if(fd < 0) {
     perror("socket_udp: socket() failed");
@@ -67,6 +68,7 @@ void bind_inet(int fd, const char *hostname, int port)
 {
   struct sockaddr_in name;
   init_sockaddr_in(&name, hostname, port);
+  //int bind(int fd, struct sockaddr *local_addr, socklen_t addr_length)
   int err = bind(fd, (struct sockaddr *)&name, sizeof(name));
   if(err < 0) {
     perror("bind_inet: bind() failed");
