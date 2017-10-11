@@ -213,7 +213,8 @@ void *jackudp_send_thread(void *PTR) {
      jack_ringbuffer_wait_for_read(d->rb, PAYLOAD_BYTES, d->pipe[0]);
 
      p.index += 1;
-     p.index %= INT32_MAX;
+     //p.index %= INT32_MAX;
+     eprintf("Indice nuevo paquete. (%u)\n");
      p.channels = d->channels;
      p.frames = PAYLOAD_SAMPLES / d->channels;
 
@@ -228,17 +229,17 @@ void *jackudp_send_thread(void *PTR) {
 void *jackudp_recv_thread(void *PTR) {
   jackudp_t *d = (jackudp_t *) PTR; //Paquete D = Interno
   packet_t p;                       //Paquete P = Network
-  int next_packet = -1;
+  u32 next_packet = -1;
 
   while(1) {
     //Llama al metodo para recibir 1 paquete de P.
     packet_recv(d->fd, &p, 0);
 
     //Comprobaciones del indice y numero de canales
-    if(p.index != next_packet || next_packet != -1) {
+    if(p.index != next_packet/* || next_packet != -1*/) {
       eprintf("jack-udp recv: out of order packet "
-              "arrival (Esperado, Recibido) (%d, %d)\n",
-	      next_packet, (int)p.index);
+              "arrival (Esperado, Recibido) (%u, %u)\n",
+          next_packet, p.index);
       //FAILURE;
     }
     if(p.channels != d->channels) {
@@ -262,7 +263,7 @@ void *jackudp_recv_thread(void *PTR) {
 
     //Actualiza el indice del paquete que debe llegar.
     next_packet = p.index + 1;
-    next_packet %= INT32_MAX;
+    //next_packet %= INT32_MAX;
   }
   return NULL;
 }
