@@ -208,12 +208,14 @@ void *jackudp_send_thread(void *PTR) {
    jackudp_t *d = (jackudp_t *) PTR;     //Paquete interno
    packet_t p;                           //Network package
    p.index = 0;                          //Inicializa el indice a 0
+   int localIndex = 0;
 
    while(1) {
      jack_ringbuffer_wait_for_read(d->rb, PAYLOAD_BYTES, d->pipe[0]);
 
-     p.index++;
-     eprintf("Indice nuevo paquete. (%d)\n", p.index);
+     localIndex++;
+     p.index = localIndex;
+     //eprintf("Indice nuevo paquete. (%d) %d\n", p.index, localIndex);
      p.channels = d->channels;
      p.frames = PAYLOAD_SAMPLES / d->channels;
 
