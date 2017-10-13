@@ -6,6 +6,7 @@
 
 #include <unistd.h> /* POSIX */
 #include <pthread.h>
+#include <sndfile.h>
 
 #include "c-common/byte-order.h"
 #include "c-common/failure.h"
@@ -22,7 +23,7 @@
 #define PAYLOAD_BYTES     (PAYLOAD_SAMPLES*sizeof(f32))
 
 
-//jackudp_t = Package from jack ports to ringbuffer
+//Struct del paquete local d.
 typedef struct {
   int buffer_size;                  //Internal buffer size in frames.
   f32 *j_buffer;                    //Internal buffer of 32 bit floats.
@@ -37,7 +38,7 @@ typedef struct {
 } jackudp_t;
 
 
-//El objeto d con el tamaño del buffer y el número de canales.
+//Inicializacion del paquete d
 static void jackudp_init(jackudp_t *d) {
   d->buffer_size = 4096;
   d->channels = 2;
@@ -45,7 +46,7 @@ static void jackudp_init(jackudp_t *d) {
 }
 
 
-//packet_t = Package from ring buffer to UDP port
+//Paquete network p.
 typedef struct {
   int index;                //Identificador del paquete
   u16 channels;             //Num channels
@@ -115,27 +116,31 @@ void jackudp_usage (void)
 
 //*************************** JACK CLIENTS (LOCAL) ***************************/
 
-// JACK CLIENT SEND
+/************************************************************ JACK CLIENT SEND*/
 // Write data from the JACK input ports to the ring buffer.
-int jackudp_send(jack_nframes_t n, void *PTR ) {
+//jack_nframes_t n = Frames/Period.
+int jackudp_send(jack_nframes_t nframes, void *PTR ) {
   jackudp_t *d = (jackudp_t *) PTR; //Paquete D
-  float *in[MAX_CHANNELS];
-  int i, j;
+  float *in[MAX_CHANNELS];          //Puntero a los Jack ports
+  int i, j;                         //Iteradores auxiliares
 
   //Los punteros in apuntan a lo mismo que los Jack port.
+  //Se hace un for para igual cada i a un channel.
   for(i = 0; i < d->channels; i++) {
-    in[i] = (float *) jack_port_get_buffer(d->j_port[i], n);
+    in[i] = (float *) jack_port_get_buffer(d->j_port[i], nframes);
   }
   //El buffer del paquete d se llena con la informacion de los Jack ports.
-  for(i = 0; i < n; i++) {
+  for(i = 0; i < nframes; i++) {  //Siendo n = 1024 (Frames/Period)
     for(j = 0; j < d->channels; j++) {
+      //El j_buffer guarda los datos de cada frame para cada uno
+      //de los canales. in[Canal][Frame]
       d->j_buffer[(i*d->channels)+j] = (f32) in[j][i];
     }
   }
 
   //Comprueba si hay espacio en buffer.
   int bytes_available = (int) jack_ringbuffer_write_space(d->rb);
-  int bytes_to_write = n * sizeof(f32) * d->channels;
+  int bytes_to_write = nframes * sizeof(f32) * d->channels;
   if(bytes_to_write > bytes_available) {
     eprintf ("jack-udp send: buffer overflow error (UDP thread late)\n");
   } else {
@@ -152,7 +157,7 @@ int jackudp_send(jack_nframes_t n, void *PTR ) {
 }
 
 
-// JACK CLIENT RECEIVE
+/************************************************************ JACK CLIENT RECV*/
 // Write data from ring buffer to JACK output ports.
 int jackudp_recv (jack_nframes_t nframes, void *PTR)
 {
@@ -163,7 +168,7 @@ int jackudp_recv (jack_nframes_t nframes, void *PTR)
   }
 
   //Conversion del RingBuffer a Jack Ports
-  //Le dice los punteros outq que apunten al mismo sitio que los Jack ports.
+  //Le dice los punteros out que apunten al mismo sitio que los Jack ports.
   int i, j;
   float *out[MAX_CHANNELS];
   for(i = 0; i < d->channels; i++) {
@@ -195,6 +200,7 @@ int jackudp_recv (jack_nframes_t nframes, void *PTR)
       }
     }
   }
+
   return 0;
 }
 
@@ -210,6 +216,11 @@ void *jackudp_send_thread(void *PTR) {
    p.index = 0;                          //Inicializa el indice a 0
    int localIndex = 0;
 
+   //Fichero
+   FILE *filed;
+   filed = fopen ("Test", "w");
+
+
    while(1) {
      jack_ringbuffer_wait_for_read(d->rb, PAYLOAD_BYTES, d->pipe[0]);
 
@@ -218,6 +229,9 @@ void *jackudp_send_thread(void *PTR) {
      //eprintf("Indice nuevo paquete. (%d) %d\n", p.index, localIndex);
      p.channels = d->channels;
      p.frames = PAYLOAD_SAMPLES / d->channels;
+
+     //Fichero
+     fprintf(filed, "%d", localIndex);
 
      jack_ringbuffer_read_exactly(d->rb, (char *)&(p.data), PAYLOAD_BYTES);
      packet_sendto(d->fd,  &p, d->address);
