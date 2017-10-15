@@ -41,7 +41,7 @@ typedef struct {
 //Inicializacion del paquete d
 static void jackudp_init(jackudp_t *d) {
   d->buffer_size = 4096;
-  d->channels = 2;
+  d->channels = 32;
   d->name = NULL;
 }
 
@@ -208,6 +208,7 @@ int jackudp_recv (jack_nframes_t nframes, void *PTR)
 
 /************************ THREADS (NETWORK) ******************************/
 
+//SENDER
 // Read data from ring buffer and write to udp port. Packets are
 // always sent with a full payload.
 void *jackudp_send_thread(void *PTR) {
@@ -215,10 +216,6 @@ void *jackudp_send_thread(void *PTR) {
    packet_t p;                           //Network package
    p.index = 0;                          //Inicializa el indice a 0
    int localIndex = 0;
-
-   //Fichero
-   FILE *filed;
-   filed = fopen ("Test", "w");
 
 
    while(1) {
@@ -230,21 +227,28 @@ void *jackudp_send_thread(void *PTR) {
      p.channels = d->channels;
      p.frames = PAYLOAD_SAMPLES / d->channels;
 
-     //Fichero
-     fprintf(filed, "%d", localIndex);
-
      jack_ringbuffer_read_exactly(d->rb, (char *)&(p.data), PAYLOAD_BYTES);
      packet_sendto(d->fd,  &p, d->address);
    }
    return NULL;
 }
 
-
+//RECEIVER
 // Read data from UDP port and write to ring buffer.
 void *jackudp_recv_thread(void *PTR) {
   jackudp_t *d = (jackudp_t *) PTR; //Paquete D = Interno
   packet_t p;                       //Paquete P = Network
   int next_packet = -1;
+
+  //Fichero
+  FILE *filed;
+  if ((filed = fopen ("Test", "w")) == NULL) {
+      eprintf("Error opening the file. \n");
+      FAILURE;
+  }
+  else {
+      eprintf("File created. \n");
+  }
 
   while(1) {
     //Llama al metodo para recibir 1 paquete de P.
@@ -274,6 +278,8 @@ void *jackudp_recv_thread(void *PTR) {
       jack_ringbuffer_write_exactly(d->rb,
 				    (char *) p.data,
 				    (size_t) PAYLOAD_BYTES);
+      //Fichero
+      fprintf(filed, "%d \n", p.index);
     }
 
     //Actualiza el indice del paquete que debe llegar.
