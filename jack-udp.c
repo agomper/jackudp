@@ -22,6 +22,7 @@
 #define PAYLOAD_SAMPLES   256
 #define PAYLOAD_BYTES     (PAYLOAD_SAMPLES*sizeof(f32))
 
+//Transmision OK. Lectura y escritura en JACK ports.
 
 //Struct del paquete local d.
 typedef struct {
